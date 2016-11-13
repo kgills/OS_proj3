@@ -1,0 +1,13 @@
+# n, cr_n, mean minInstanceDelay, mean minSendDelay, messaes
+2 2 100 10 2000
+
+0 localhost 3333
+1 localhost 3334
+
+# node_id, neighbors
+0 1
+1 0
+
+# cr iterations
+(c,1)
+(r,0)
