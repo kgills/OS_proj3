@@ -1,5 +1,5 @@
-# n, cr_n, mean minInstanceDelay, mean minSendDelay, messaes
-2 2 100 10 2000
+# n, cr_n, mean minInstanceDelay, mean minSendDelay, messages
+2 2 100 1000 10
 
 0 localhost 3333
 1 localhost 3334
@@ -11,3 +11,6 @@
 # cr iterations
 (c,1)
 (r,0)
+
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 2 0 2 100 1000 10 localhost 3333 localhost 3334 1 1 c r 1 0
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 2 1 2 100 1000 10 localhost 3333 localhost 3334 1 0 c r 1 0

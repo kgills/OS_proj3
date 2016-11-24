@@ -120,7 +120,7 @@ print crList
 i = 0
 for machine in machines:
 
-	command = ["java","-cp",path,"KooToueg",str(n), str(cr_n), str(minInst), str(minSend), str(messages)]
+	command = ["java","-cp",path,"KooToueg",str(n), str(i), str(cr_n), str(minInst), str(minSend), str(messages)]
 
 	for machine2 in machines:
 		command = command + machine2[1:]
@@ -134,7 +134,7 @@ for machine in machines:
 		command = command+[cr[1]]
 
 
-	command = ["ssh","-o","StrictHostKeyChecking=no",user+"@"+machine[1]]+command
+	# command = ["ssh","-o","StrictHostKeyChecking=no",user+"@"+machine[1]]+command
 	i = i+1
 
 	print " ".join(command)
