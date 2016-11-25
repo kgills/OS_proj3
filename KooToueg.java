@@ -13,6 +13,14 @@ import com.sun.nio.sctp.MessageInfo;
 import com.sun.nio.sctp.SctpChannel;
 import com.sun.nio.sctp.SctpServerChannel;
 
+// Assumptions:
+/**
+ * Still breaking neighbor links for completion and passing along the CR message
+ * Assuming that CP and recovery never fails
+*/
+
+
+
 /******************************************************************************/
 class Application implements Runnable {
 
@@ -34,20 +42,6 @@ class Application implements Runnable {
         n_n = neighbors.length;
     }
 
-    // Return an exponential random variable from mean lambda
-    private double nextExp(int lambda) {
-        return (-lambda)*Math.log(1-Math.random())/Math.log(2);
-    }
-
-    private void delay(double msec) {
-
-        try {
-            Thread.sleep((long)msec);
-        } catch(Exception e) {
-            e.printStackTrace();
-        }
-    }
-
     public void run() {
         long threadId = Thread.currentThread().getId();
 
@@ -59,11 +53,10 @@ class Application implements Runnable {
         while(messages > 0) {
 
             // Delay between send events
-            delay(nextExp(d));
+            p.delay(p.nextExp(d));
 
             // Send to a uniformly random neighbor
             int neighbor = (int)Math.floor(Math.random() * n_n);
-            System.out.println("Sending to neighbor "+neighbors[neighbor]);
             p.sendMessage(neighbors[neighbor], MessageType.SIMPLE, false);
 
             messages = messages - 1;
@@ -76,9 +69,11 @@ class Application implements Runnable {
 
 /******************************************************************************/
 enum MessageType {
-    SIMPLE,         // Application message, do nothing except update clocks...
-    COMPLETE,       // This node is complete
-    PROTOCOL,       // You're next bro, execute checkpoint or recovery
+    SIMPLE,             // Application message, do nothing except update clocks...
+    COMPLETE,           // This node is complete
+    PROTOCOL,           // You're next bro, execute checkpoint or recovery
+    CHECKPOINT,         // Command for neighbor to take a checkpoint
+    CHECKPOINT_RESP,    // Converge cast Response from neighbor once CP taken
 }
 
 /******************************************************************************/
@@ -93,6 +88,8 @@ class Message implements java.io.Serializable{
     String [] crList;       // Array or "c" or "r" 
     int [] crNodes;         // Array of nodes to execute protocol
     int crIndex;
+
+    int[] llr;
 }
 
 /******************************************************************************/
@@ -222,23 +219,28 @@ class Protocol implements Runnable{
     private int[] neighbors;
     private String[] hosts;
     private int[] ports;
+    private int crDelay;
 
     private Boolean[] complete;
     private Semaphore sending;
 
-    private int[] clock;
-    private int[] llr;          // Last label received
-    private int[] fls;          // First label sent
-    private int label;
+    private volatile int[] clock;
+    private volatile int[] llr;          // Last label received
+    private volatile int[] fls;          // First label sent
+    private volatile int label;
+
+    private Checkpoint tentative;
+    private Checkpoint perm;
 
     private volatile ConcurrentLinkedQueue<Message> receiveQueue;
 
-    Protocol(int n, int n_i, int[] neighbors, String[] hosts, int[] ports) {
+    Protocol(int n, int n_i, int[] neighbors, String[] hosts, int[] ports, int crDelay) {
         this.n = n;
         this.n_i = n_i;
         this.neighbors= neighbors;
         this.hosts = hosts;
         this.ports = ports;
+        this.crDelay = crDelay;
 
         complete = new Boolean[n];
         for(int i = 0; i < n; i++) {
@@ -266,7 +268,30 @@ class Protocol implements Runnable{
 
         label = -1;
 
+        tentative = new Checkpoint();
+        tentative.llr = new int[n];
+        tentative.fls = new int[n];
+        tentative.clock = new int[n];
+        perm = new Checkpoint();
+        perm.llr = new int[n];
+        perm.fls = new int[n];
+        perm.clock = new int[n];
+
         receiveQueue = new ConcurrentLinkedQueue<Message>();  // Server produces messages, protocol consumes
+    }
+
+    // Return an exponential random variable from mean lambda
+    public double nextExp(int lambda) {
+        return (-lambda)*Math.log(1-Math.random())/Math.log(2);
+    }
+
+    public void delay(double msec) {
+
+        try {
+            Thread.sleep((long)msec);
+        } catch(Exception e) {
+            e.printStackTrace();
+        }
     }
 
     // Method to serialize messages
@@ -348,15 +373,13 @@ class Protocol implements Runnable{
 
             sc.receive(buf, null, null);
 
-            updateFLS(dest, label, false);
-
             sc.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    public void sendMessage(int dest, Message m, Boolean broadcast) {
+    public synchronized void sendMessage(int dest, Message m, Boolean broadcast) {
 
         m.clock = incrementClock(n_i);
         m.label = ++label;
@@ -369,9 +392,12 @@ class Protocol implements Runnable{
 
         if(!broadcast) {
             transmitMessage(m, dest);
+            updateFLS(dest, m.label, false);
+
         } else {
             for(int i = 0; i < n; i++) {
                 transmitMessage(m, i);
+                updateFLS(i, m.label, false);
             }
         }
 
@@ -379,7 +405,7 @@ class Protocol implements Runnable{
     }
 
     // Send message to neighbor
-    public void sendMessage(int dest, MessageType type, Boolean broadcast) {
+    public synchronized void sendMessage(int dest, MessageType type, Boolean broadcast) {
 
         // Send generic message directly to neighbor
         Message m = new Message();
@@ -396,9 +422,12 @@ class Protocol implements Runnable{
 
         if(!broadcast) {
             transmitMessage(m, dest);
+            updateFLS(dest, m.label, false);
+
         } else {
             for(int i = 0; i < n; i++) {
                 transmitMessage(m, i);
+                updateFLS(i, m.label, false);
             }
         }
 
@@ -422,25 +451,135 @@ class Protocol implements Runnable{
 
     public void startCR(String[] crList, int[] crNodes) {
 
-        System.out.println("Node "+n_i+" executing "+crList[0]);
+        Message m = new Message();
 
-        // TODO: CR lol
+        m.type = MessageType.PROTOCOL;
+        m.crList = crList;
+        m.crNodes = crNodes;
+        m.crIndex = 0;
 
-        if(crList.length > 1) {
-            // Pass on to next node
-            Message m = new Message();
+        // Save the destination
+        int dest = m.crNodes[m.crIndex];
 
-            m.type = MessageType.PROTOCOL;
-            m.crList = crList;
-            m.crNodes = crNodes;
-            m.crIndex = 1;
+        // Send the protocol message to the next node
+        sendMessage(dest, m, false);
+    }
 
-            // Save the destination
-            int dest = m.crNodes[m.crIndex];
+    // -1 if this node is the initiator
+    public void crHandler(int origin)
+    {
 
-            // Send the protocol message to the next node
-            sendMessage(dest, m, false);
+        // TODO: Currently only hanlding CP
+
+        // Empty out the receive queue, assuming that only simple messages will be in the queue
+        while(true) {
+
+            // Process messages in the received queue
+            if(receiveQueue.peek() != null) {
+                Message m = receiveQueue.remove();
+
+                // Update LLR
+                updateLLR(m.origin, m.label, false);
+
+                // Uppdate our vector clock
+                mergeClock(m.clock);
+
+                if(m.type != MessageType.SIMPLE) {
+                    System.out.println("ERROR: Processed non-simple message in CRHandler");
+                    System.out.println(m.type+"From "+m.origin);
+                    while(true) {}
+                }
+            } else {
+                break;
+            }
         }
+
+        // Take tentative checkpoint
+        tentative.label = label;
+
+        // Clear our llr and fls
+        for(int i = 0; i < n; i++) {
+
+            tentative.llr[i] = llr[i];
+            tentative.fls[i] = fls[i];
+            tentative.clock[i] = clock[i];
+
+            llr[i] = -1;
+            fls[i] = -1;
+        }
+        
+        // Determine which of our neighbors we need to send the message to
+        Boolean[] neighborWaiting = new Boolean[n];
+        for(int i = 0; i < n; i++) {
+            neighborWaiting[i] = false;
+        }
+        for(int i = 0; i < neighbors.length; i++) {
+
+            // Continue through originator of the CP request
+            if(neighbors[i] == origin) {
+                System.out.println("neighbor["+i+"] == origin");
+                continue;
+            }
+
+            // This neighbor does not need to take a CP if LLR[i] == bottom
+            if(tentative.llr[neighbors[i]] == -1) {
+                System.out.println("tentative.llr["+neighbors[i]+"] = "+tentative.llr[neighbors[i]]);
+                continue;
+            }
+
+            // Send CP request to neighbor
+            System.out.println("Sending to CHECKPOINT to neighbor "+neighbors[i]);
+
+            Message m = new Message();
+            m.type = MessageType.CHECKPOINT;
+            m.origin = n_i;
+            m.clock = tentative.clock;
+            m.label = tentative.label;
+            m.llr = tentative.llr;
+
+            transmitMessage(m, neighbors[i]);
+            neighborWaiting[neighbors[i]] = true;
+        }
+
+        while(true) {
+
+            // Process messages in the received queue
+            if(receiveQueue.peek() != null) {
+                Message m = receiveQueue.remove();
+
+                if(m.type == MessageType.CHECKPOINT_RESP) {
+                    System.out.println("Received CHECKPOINT_RESP from "+m.origin);
+                    neighborWaiting[m.origin] = false;
+
+                } else if(m.type == MessageType.SIMPLE) {
+                    // Update LLR
+                    updateLLR(m.origin, m.label, false);
+
+                    // Uppdate our vector clock
+                    mergeClock(m.clock);
+                } else {
+                    System.out.println("ERROR: Unexpected type received in CRHandler");
+                    System.out.println(m.type+"From "+m.origin);
+                    while(true) {}
+                }
+
+            }
+
+            Boolean stillWaiting = false;
+            for(int i = 0; i < n; i++) {
+                if(neighborWaiting[i] == true) {
+                    stillWaiting = true;
+                    break;
+                }
+            }
+
+            if(stillWaiting == false) {
+                break;
+            }
+        }
+
+        // Commit the checkpoint
+        perm = tentative;
     }
 
     public void run() {
@@ -453,26 +592,40 @@ class Protocol implements Runnable{
             if(receiveQueue.peek() != null) {
                 Message m = receiveQueue.remove();
 
-                System.out.println("Received message from "+m.origin);
-
-                // Update LLR
-                updateLLR(m.origin, m.label, false);
-
-                // Uppdate our vector clock
-                mergeClock(m.clock);
-                printClock();
-
                 switch(m.type) {
                     case COMPLETE:
                         complete[m.origin] = true;
                     break;
                     case SIMPLE:
+
+                        System.out.println("Processing SIMPLE from "+m.origin);
+                        // Update LLR
+                        updateLLR(m.origin, m.label, false);
+
+                        // Uppdate our vector clock
+                        mergeClock(m.clock);
+                        printClock();
                     break;
-                    case PROTOCOL: 
+                    case PROTOCOL:
+
+                        // Delay between CR events
+                        delay(nextExp(crDelay));
+
                         System.out.println("Node "+n_i+" executing "+m.crList[m.crIndex]);
 
-                        // TODO: Do protocol lol
-                        // TODO: Spawn another thread to handle the checkpoint/recovery
+                        // Lock the sending semaphore to prevent other threads from sending
+                        try {
+                            sending.acquire();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+
+                        // Run the CR 
+                        crHandler(-1);
+
+                        sending.release();
+
+                        System.out.println("Node "+n_i+" complete "+m.crList[m.crIndex]);
 
                         if(m.crList.length > ++m.crIndex) {
                             // Save the destination
@@ -482,6 +635,35 @@ class Protocol implements Runnable{
                             sendMessage(dest, m, false);
                         }
 
+                    break;
+
+                    case CHECKPOINT:
+
+                        System.out.println("Processing CHECKPOINT from "+m.origin);
+
+
+                        // Lock the sending semaphore to prevent other threads from sending
+                        try {
+                            sending.acquire();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+
+                        // Determine if we need to take a CP
+                        if((m.llr[n_i] >= fls[m.origin]) && (fls[m.origin] > -1)) {
+                            // Take a CP
+                            System.out.println("Take a CP");
+                            crHandler(m.origin);
+                        }
+
+                        // Send the CP response
+                        Message mr = new Message();
+                        mr.type = MessageType.CHECKPOINT_RESP;
+                        mr.origin = n_i;
+
+                        transmitMessage(mr, m.origin);
+
+                        sending.release();
 
                     break;
                 }
@@ -564,7 +746,7 @@ public class KooToueg {
         }
 
         // Start the protocol thread
-        Protocol prot = new Protocol(n, n_i, neighbors, hostnames, ports);
+        Protocol prot = new Protocol(n, n_i, neighbors, hostnames, ports, instDelay);
         Thread protocol_thread = new Thread(prot);
         protocol_thread.start();
 
@@ -583,13 +765,6 @@ public class KooToueg {
         // Start the  application thread
         Thread app_thread = new Thread(new Application(sendDelay, n_i, neighbors, prot, messages));
         app_thread.start();
-
-        // Wait 5 secodns before starting the CR
-        try {
-            Thread.sleep(5000);
-        } catch(Exception e) {
-            e.printStackTrace();
-        }
 
         // If this node is first in line for CR, initiate it with the protocol class
         if(crNodes[0] == n_i) {
