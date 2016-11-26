@@ -3,6 +3,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Semaphore;
 import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.io.*;
 import java.nio.ByteBuffer; 
 import java.nio.channels.ClosedChannelException;
@@ -137,7 +138,7 @@ class ServerHandler implements Runnable{
             p.putQueue(m);
 
             if(m.type != MessageType.SIMPLE) {
-                System.out.println(p.n_i+" SReceived "+m.type+" from "+m.origin);
+                // System.out.println(p.n_i+" SReceived "+m.type+" from "+m.origin);
             }
 
 
@@ -235,12 +236,6 @@ class ProtocolPasser implements Runnable{
 
     public void run() {
 
-        // Broadcast VECTOR_CLOCK message
-
-        // Gather the results
-
-        // Check in the checkCGS function
-
         p.delay(p.nextExp(delay));
 
         // Send the protocol message to the next node
@@ -270,6 +265,10 @@ class Protocol implements Runnable{
     private Checkpoint perm;
 
     private volatile ConcurrentLinkedQueue<Message> receiveQueue;
+    private volatile ConcurrentLinkedQueue<Message> tempreceiveQueue;
+
+    public int[][] clockMatrix;
+    public Boolean[] vectorReceived;
 
     Protocol(int n, int n_i, int[] neighbors, String[] hosts, int[] ports, int crDelay) {
         this.n = n;
@@ -315,14 +314,23 @@ class Protocol implements Runnable{
         perm.clock = new int[n];
 
         receiveQueue = new ConcurrentLinkedQueue<Message>();  // Server produces messages, protocol consumes
+        tempreceiveQueue = new ConcurrentLinkedQueue<Message>();  // Server produces messages, protocol consumes
+
+        clockMatrix = new int[n][n];
+        vectorReceived = new Boolean[n];
+
     }
 
     public Boolean checkCGS(int[][] clocks) {
 
-
-
         // return true if vector clocks form CGS, false if not
 
+        for(int i=0;i<clocks.length;i++) {
+            for(int j = 0;j<clocks.length;j++) {
+                if(clocks[i][i] < clocks[i][j])
+                    return false;
+            }
+        }
         return true;
     }
 
@@ -359,7 +367,7 @@ class Protocol implements Runnable{
         return clock;
     }
 
-    private synchronized void updateLLR(int origin, int label, Boolean clear) {
+    private void updateLLR(int origin, int label, Boolean clear) {
         if(clear) {
             llr[origin] = -1;
         } else {
@@ -367,7 +375,7 @@ class Protocol implements Runnable{
         }
     }
 
-    private synchronized void updateFLS(int dest, int label, Boolean clear) {
+    private void updateFLS(int dest, int label, Boolean clear) {
         if(clear) {
             fls[dest] = -1;
         } else if(fls[dest] == -1) {
@@ -525,12 +533,8 @@ class Protocol implements Runnable{
                 Message m = receiveQueue.remove();
 
                 if(m.type == MessageType.SIMPLE) {
-                    // Update LLR
-                    updateLLR(m.origin, m.label, false);
-
-                    // Uppdate our vector clock
-                    mergeClock(m.clock);
-
+                    tempreceiveQueue.add(m);
+                    
                 } else if(m.type == MessageType.CHECKPOINT) { 
                     // ALRIGHT
 
@@ -599,6 +603,7 @@ class Protocol implements Runnable{
         }
 
         int iter = 0;
+        
         while(true) {
 
             // Process messages in the received queue
@@ -610,11 +615,7 @@ class Protocol implements Runnable{
                     neighborWaiting[m.origin] = false;
 
                 } else if(m.type == MessageType.SIMPLE) {
-                    // Update LLR
-                    updateLLR(m.origin, m.label, false);
-
-                    // Uppdate our vector clock
-                    mergeClock(m.clock);
+                    tempreceiveQueue.add(m);
                 } else if(m.type == MessageType.CHECKPOINT) {
                     // Do nothing, already taking a checkpoint
 
@@ -624,8 +625,6 @@ class Protocol implements Runnable{
                         mr.origin = n_i;
 
                         transmitMessage(mr, m.origin);
-                        System.out.println(n_i+" 1Sent CHECKPOINT_RESP to "+m.origin);
-
 
                 } else {
                     System.out.println("ERROR: Unexpected type received in CRHandler");
@@ -644,16 +643,19 @@ class Protocol implements Runnable{
 
             if(stillWaiting == false) {
                 break;
-            } else if((++iter % 1000000000) == 0) {
-                System.out.println(n_i+" Still waiting "+Thread.currentThread().getId());
-                for(int i = 0; i < n; i++) {
-                    System.out.println(neighborWaiting[i]);
-                }
-
-                if(receiveQueue.peek() != null) {
-                    System.out.println("ReceiveQueue not empty");
-                }
             }
+
+            // else if((++iter % 100000000) == 0) {
+            //     System.out.println(n_i+" Still waiting "+Thread.currentThread().getId());
+            //     for(int i = 0; i < n; i++) {
+            //         System.out.println(neighborWaiting[i]);
+            //     }
+            // }
+        }
+
+        // Put the simple messages back in the receive queue
+        while(tempreceiveQueue.peek() != null) {
+            putQueue(tempreceiveQueue.remove());
         }
 
         // Commit the checkpoint
@@ -665,10 +667,16 @@ class Protocol implements Runnable{
         long threadId = Thread.currentThread().getId();
         System.out.println("Protocol running "+threadId);
 
+        int iter = 0;
+
+
         while(true) {
 
             // Process messages in the received queue
             if(receiveQueue.peek() != null) {
+
+                iter = 0;
+
                 Message m = receiveQueue.remove();
 
                 switch(m.type) {
@@ -701,7 +709,43 @@ class Protocol implements Runnable{
 
                         sending.release();
 
-                        System.out.println("Node "+n_i+" complete "+m.crList[m.crIndex]);
+                        // Clear the vector clock matrix
+                        for(int i = 0; i < n; i++) {
+                            for(int j = 0; j < n; j++) {
+                                clockMatrix[i][j] = 0;
+                            }
+
+                            vectorReceived[i] = false;
+                        }
+
+                        // Broadcast VECTOR_CLOCK message
+                        sendMessage(0, MessageType.VECTOR_CLOCK, true);
+
+                        // Gather the results
+                        while(true) {
+                            Boolean stillWaiting = false;
+                            for(int i = 0; i < n; i++) {
+                                if(vectorReceived[i] == true) {
+                                    stillWaiting = true;
+                                    break;
+                                }
+                            }
+
+                            if(!stillWaiting) {
+                                break;
+                            }
+                        }
+
+                        // Check in the checkCGS function
+                        if(!checkCGS(clockMatrix)) {
+                            System.out.println("ERROR, inconsistent global state in last checkpoint");
+                            while(true) {}
+                        } else {
+                            System.out.println(n_i+" Last Checkpoints concurrent");
+                        }
+
+
+                        System.out.println("Node "+n_i+" complete "+m.crList[m.crIndex]+" "+m.crIndex);
 
                         if(m.crList.length > ++m.crIndex) {
 
@@ -728,8 +772,9 @@ class Protocol implements Runnable{
                         if((m.llr[n_i] >= fls[m.origin]) && (fls[m.origin] > -1)) {
                             // Take a CP
                             crHandler(m.origin);
+                        } else {
+                            System.out.println(n_i+" Not taking a CP");
                         }
-
 
                         // Send the CP response
                         Message mr = new Message();
@@ -738,18 +783,44 @@ class Protocol implements Runnable{
 
                         transmitMessage(mr, m.origin);
 
-                        System.out.println(n_i+" 2Sent CHECKPOINT_RESP to "+m.origin);
+                        // System.out.println(n_i+" 2Sent CHECKPOINT_RESP to "+m.origin);
 
 
                         sending.release();
 
                     break;
 
+                    case VECTOR_CLOCK:
+
+                        // Send a VECTOR_CLOCK_RESP
+                        int dest = m.origin;
+                        m.origin = n_i;
+                        m.clock = perm.clock;
+                        m.type = MessageType.VECTOR_CLOCK_RESP;
+
+                        sendMessage(dest, m, false);
+
+                    break;
+
+                    case VECTOR_CLOCK_RESP:
+
+                        // Store the clock value in the message
+                        for(int i = 0; i < n; i++) {
+                            clockMatrix[n_i][i] = m.clock[i];
+                        }
+                        vectorReceived[m.origin] = true;
+
+                    break;
+
                     default:
-                        System.out.println("WUT "+m.type+" from: "+m.origin);
+                        System.out.println("ERROR: Unexpected "+m.type+" from: "+m.origin);
                         while(true) {}
                 }
-            }
+            } 
+
+            // else if((++iter % 100000000) == 0) {
+            //     System.out.println(n_i+" No messages "+Thread.currentThread().getId());
+            // }
 
             // Check to see if all of the nodes have completed
             Boolean allComplete = true;
