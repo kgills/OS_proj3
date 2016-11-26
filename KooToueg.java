@@ -74,6 +74,8 @@ enum MessageType {
     PROTOCOL,           // You're next bro, execute checkpoint or recovery
     CHECKPOINT,         // Command for neighbor to take a checkpoint
     CHECKPOINT_RESP,    // Converge cast Response from neighbor once CP taken
+    VECTOR_CLOCK,       
+    VECTOR_CLOCK_RESP,
 }
 
 /******************************************************************************/
@@ -133,6 +135,12 @@ class ServerHandler implements Runnable{
             sc.close();
 
             p.putQueue(m);
+
+            if(m.type != MessageType.SIMPLE) {
+                System.out.println(p.n_i+" SReceived "+m.type+" from "+m.origin);
+            }
+
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -211,11 +219,40 @@ class Server implements Runnable{
     }
 }
 
+class ProtocolPasser implements Runnable{
+
+    private Protocol p;
+    private int dest;
+    private Message m;
+    private int delay;
+
+    ProtocolPasser(Protocol p, int dest, Message m, int delay) {
+        this.p = p;
+        this.dest = dest;
+        this.m = m;
+        this.delay = delay;
+    }
+
+    public void run() {
+
+        // Broadcast VECTOR_CLOCK message
+
+        // Gather the results
+
+        // Check in the checkCGS function
+
+        p.delay(p.nextExp(delay));
+
+        // Send the protocol message to the next node
+        p.sendMessage(dest, m, false);
+    }
+}
+
 /******************************************************************************/
 class Protocol implements Runnable{
 
-    private int n;
-    private int n_i;
+    public int n;
+    public int n_i;
     private int[] neighbors;
     private String[] hosts;
     private int[] ports;
@@ -280,6 +317,15 @@ class Protocol implements Runnable{
         receiveQueue = new ConcurrentLinkedQueue<Message>();  // Server produces messages, protocol consumes
     }
 
+    public Boolean checkCGS(int[][] clocks) {
+
+
+
+        // return true if vector clocks form CGS, false if not
+
+        return true;
+    }
+
     // Return an exponential random variable from mean lambda
     public double nextExp(int lambda) {
         return (-lambda)*Math.log(1-Math.random())/Math.log(2);
@@ -340,22 +386,22 @@ class Protocol implements Runnable{
     }
 
     synchronized void printClock() {
-        System.out.println("Clock:");
-        for(int i = 0; i < n; i++) {
-            System.out.println(i+": "+clock[i]);
-        }
+        // System.out.println("Clock:");
+        // for(int i = 0; i < n; i++) {
+        //     System.out.println(i+": "+clock[i]);
+        // }
 
-        System.out.println("Label: "+label);
+        // System.out.println("Label: "+label);
 
-        System.out.println("LLR:");
-        for(int i = 0; i < n; i++) {
-            System.out.println(i+": "+llr[i]);
-        }
+        // System.out.println("LLR:");
+        // for(int i = 0; i < n; i++) {
+        //     System.out.println(i+": "+llr[i]);
+        // }
 
-        System.out.println("FLS:");
-        for(int i = 0; i < n; i++) {
-            System.out.println(i+": "+fls[i]);
-        }
+        // System.out.println("FLS:");
+        // for(int i = 0; i < n; i++) {
+        //     System.out.println(i+": "+fls[i]);
+        // }
     }
 
     private void transmitMessage(Message m, int dest) {
@@ -441,7 +487,7 @@ class Protocol implements Runnable{
         //       the message
     }
 
-    public synchronized void putQueue(Message m) {
+    public void putQueue(Message m) {
         try {
             receiveQueue.add(m);
         } catch (Exception e) {
@@ -478,15 +524,28 @@ class Protocol implements Runnable{
             if(receiveQueue.peek() != null) {
                 Message m = receiveQueue.remove();
 
-                // Update LLR
-                updateLLR(m.origin, m.label, false);
+                if(m.type == MessageType.SIMPLE) {
+                    // Update LLR
+                    updateLLR(m.origin, m.label, false);
 
-                // Uppdate our vector clock
-                mergeClock(m.clock);
+                    // Uppdate our vector clock
+                    mergeClock(m.clock);
 
-                if(m.type != MessageType.SIMPLE) {
-                    System.out.println("ERROR: Processed non-simple message in CRHandler");
-                    System.out.println(m.type+"From "+m.origin);
+                } else if(m.type == MessageType.CHECKPOINT) { 
+                    // ALRIGHT
+
+                    // Send the CP response
+                    Message mr = new Message();
+                    mr.type = MessageType.CHECKPOINT_RESP;
+                    mr.origin = n_i;
+
+                    transmitMessage(mr, m.origin);
+                    System.out.println(n_i+" 0Sent CHECKPOINT_RESP to "+m.origin);
+
+
+                } else {
+                    System.out.println("ERROR: Processed unknown message in CRHandler");
+                    System.out.println(m.type+" From "+m.origin);
                     while(true) {}
                 }
             } else {
@@ -517,18 +576,16 @@ class Protocol implements Runnable{
 
             // Continue through originator of the CP request
             if(neighbors[i] == origin) {
-                System.out.println("neighbor["+i+"] == origin");
                 continue;
             }
 
             // This neighbor does not need to take a CP if LLR[i] == bottom
             if(tentative.llr[neighbors[i]] == -1) {
-                System.out.println("tentative.llr["+neighbors[i]+"] = "+tentative.llr[neighbors[i]]);
                 continue;
             }
 
             // Send CP request to neighbor
-            System.out.println("Sending to CHECKPOINT to neighbor "+neighbors[i]);
+            System.out.println(n_i+" Sending CHECKPOINT to neighbor "+neighbors[i]);
 
             Message m = new Message();
             m.type = MessageType.CHECKPOINT;
@@ -541,6 +598,7 @@ class Protocol implements Runnable{
             neighborWaiting[neighbors[i]] = true;
         }
 
+        int iter = 0;
         while(true) {
 
             // Process messages in the received queue
@@ -548,7 +606,7 @@ class Protocol implements Runnable{
                 Message m = receiveQueue.remove();
 
                 if(m.type == MessageType.CHECKPOINT_RESP) {
-                    System.out.println("Received CHECKPOINT_RESP from "+m.origin);
+                    System.out.println(n_i+" Processing CHECKPOINT_RESP from "+m.origin);
                     neighborWaiting[m.origin] = false;
 
                 } else if(m.type == MessageType.SIMPLE) {
@@ -557,12 +615,23 @@ class Protocol implements Runnable{
 
                     // Uppdate our vector clock
                     mergeClock(m.clock);
+                } else if(m.type == MessageType.CHECKPOINT) {
+                    // Do nothing, already taking a checkpoint
+
+                        // Send the CP response
+                        Message mr = new Message();
+                        mr.type = MessageType.CHECKPOINT_RESP;
+                        mr.origin = n_i;
+
+                        transmitMessage(mr, m.origin);
+                        System.out.println(n_i+" 1Sent CHECKPOINT_RESP to "+m.origin);
+
+
                 } else {
                     System.out.println("ERROR: Unexpected type received in CRHandler");
-                    System.out.println(m.type+"From "+m.origin);
+                    System.out.println(m.type+" From "+m.origin);
                     while(true) {}
                 }
-
             }
 
             Boolean stillWaiting = false;
@@ -575,10 +644,20 @@ class Protocol implements Runnable{
 
             if(stillWaiting == false) {
                 break;
+            } else if((++iter % 1000000000) == 0) {
+                System.out.println(n_i+" Still waiting "+Thread.currentThread().getId());
+                for(int i = 0; i < n; i++) {
+                    System.out.println(neighborWaiting[i]);
+                }
+
+                if(receiveQueue.peek() != null) {
+                    System.out.println("ReceiveQueue not empty");
+                }
             }
         }
 
         // Commit the checkpoint
+        System.out.println(n_i+" Committing checkpoint");
         perm = tentative;
     }
 
@@ -598,7 +677,7 @@ class Protocol implements Runnable{
                     break;
                     case SIMPLE:
 
-                        System.out.println("Processing SIMPLE from "+m.origin);
+                        // System.out.println("Processing SIMPLE from "+m.origin);
                         // Update LLR
                         updateLLR(m.origin, m.label, false);
 
@@ -607,9 +686,6 @@ class Protocol implements Runnable{
                         printClock();
                     break;
                     case PROTOCOL:
-
-                        // Delay between CR events
-                        delay(nextExp(crDelay));
 
                         System.out.println("Node "+n_i+" executing "+m.crList[m.crIndex]);
 
@@ -628,18 +704,17 @@ class Protocol implements Runnable{
                         System.out.println("Node "+n_i+" complete "+m.crList[m.crIndex]);
 
                         if(m.crList.length > ++m.crIndex) {
-                            // Save the destination
-                            int dest = m.crNodes[m.crIndex];
 
-                            // Send the protocol message to the next node
-                            sendMessage(dest, m, false);
+                            // Spawn a new thread to wait and send the protocol message to the next node
+                            Thread protocolPasser_thread = new Thread(new ProtocolPasser(this, m.crNodes[m.crIndex], m, crDelay));
+                            protocolPasser_thread.start();
                         }
 
                     break;
 
                     case CHECKPOINT:
 
-                        System.out.println("Processing CHECKPOINT from "+m.origin);
+                        System.out.println(n_i+" Processing CHECKPOINT from "+m.origin);
 
 
                         // Lock the sending semaphore to prevent other threads from sending
@@ -652,9 +727,9 @@ class Protocol implements Runnable{
                         // Determine if we need to take a CP
                         if((m.llr[n_i] >= fls[m.origin]) && (fls[m.origin] > -1)) {
                             // Take a CP
-                            System.out.println("Take a CP");
                             crHandler(m.origin);
                         }
+
 
                         // Send the CP response
                         Message mr = new Message();
@@ -663,9 +738,16 @@ class Protocol implements Runnable{
 
                         transmitMessage(mr, m.origin);
 
+                        System.out.println(n_i+" 2Sent CHECKPOINT_RESP to "+m.origin);
+
+
                         sending.release();
 
                     break;
+
+                    default:
+                        System.out.println("WUT "+m.type+" from: "+m.origin);
+                        while(true) {}
                 }
             }
 
@@ -765,6 +847,13 @@ public class KooToueg {
         // Start the  application thread
         Thread app_thread = new Thread(new Application(sendDelay, n_i, neighbors, prot, messages));
         app_thread.start();
+
+        // Wait 5 secodns for the applications to start
+        try {
+            Thread.sleep(5000);
+        } catch(Exception e) {
+            e.printStackTrace();
+        }
 
         // If this node is first in line for CR, initiate it with the protocol class
         if(crNodes[0] == n_i) {
