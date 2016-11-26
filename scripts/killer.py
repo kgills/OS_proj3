@@ -8,21 +8,20 @@ import sys, subprocess
 print 'Opening config file:', str(sys.argv[1])
 config_file = open(sys.argv[1], 'r')
 
-# Edit this to the path where the executables are
-# path="/home/kgills/Workspace/AdvancedOS/OS_proj2/"
-path="/home/012/k/kh/khg140030/"
-
 # Edit this for your username
 user="khg140030"
 
 n = -1
-d = -1
-c = -1
-iters = -1
+cr_n = -1
+minInst = -1
+minSend = -1
+messages = -1
 n_m = 0
-n_q = 0
+n_n = 0
+n_cr = 0
 machines = []
-quorums = []
+neighbors = []
+crList = []
 
 # get each line
 for line in config_file:
@@ -43,16 +42,20 @@ for line in config_file:
 			n = int(word)
 			continue
 
-		if d == -1:
-			d = int(word)
+		if cr_n == -1:
+			cr_n = int(word)
 			continue
 
-		if c == -1:
-			c = int(word)
+		if minInst == -1:
+			minInst = int(word)
 			continue
 
-		if iters == -1:
-			iters = int(word)
+		if minSend == -1:
+			minSend = int(word)
+			continue
+
+		if messages == -1:
+			messages = int(word)
 			continue
 
 		# Get the machines
@@ -61,30 +64,10 @@ for line in config_file:
 			machines.append(line_split)
 			break
 
-		# Get the quorums
-		if ((n_q < n) and (n != -1)):
-			n_q = n_q+1
-			quorums.append(line_split)
-			break
-
-# Remove all of the extra characters
-i = 0
-j = 0
-for quorum in quorums:
-	j = 0
-	for word in quorum:
-		word = word.replace(")", "")
-		word = word.replace("(", "")
-		word = word.replace(",", "")
-		quorums[i][j] = word
-		j=j+1
-	i=i+1
-
-# Build and execute the commands
-# print machines
+		# Get the cr iterations
 
 for machine in machines:
 	command = ["ssh","-o","StrictHostKeyChecking=no",user+"@"+machine[1],"killall","-u",user,"&"]
 	print " ".join(command)
-	p = subprocess.Popen(command)
-	p.wait()
+	# p = subprocess.Popen(command)
+	# p.wait()
