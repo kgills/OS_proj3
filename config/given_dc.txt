@@ -1,0 +1,33 @@
+# n, cr_n, mean minInstanceDelay, mean minSendDelay, messaes
+5 10 100 10 1000
+
+0 dc09.utdallas.edu 3333
+1 dc25.utdallas.edu 3334
+2 dc18.utdallas.edu 3335
+3 dc12.utdallas.edu 3336
+4 dc37.utdallas.edu 3337
+
+# node_id, neighbors
+0 1 2
+1 0 3
+2 0 3
+3 1 2 4
+4 3
+
+# cr iterations
+(c,1)
+(c,2)
+(c,0)
+(c,2)
+(c,4)
+(c,1)
+(c,0)
+(c,3)
+(c,3)
+(c,2)
+
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 5 0 10 100 10 2000 localhost 3333 localhost 3334 localhost 3335 localhost 3336 localhost 3337 2 1 2 c c c c c c c c c c 1 2 0 2 4 1 0 3 3 2
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 5 1 10 100 10 2000 localhost 3333 localhost 3334 localhost 3335 localhost 3336 localhost 3337 2 0 3 c c c c c c c c c c 1 2 0 2 4 1 0 3 3 2
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 5 2 10 100 10 2000 localhost 3333 localhost 3334 localhost 3335 localhost 3336 localhost 3337 2 0 3 c c c c c c c c c c 1 2 0 2 4 1 0 3 3 2
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 5 3 10 100 10 2000 localhost 3333 localhost 3334 localhost 3335 localhost 3336 localhost 3337 3 1 2 4 c c c c c c c c c c 1 2 0 2 4 1 0 3 3 2
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 5 4 10 100 10 2000 localhost 3333 localhost 3334 localhost 3335 localhost 3336 localhost 3337 1 3 c c c c c c c c c c 1 2 0 2 4 1 0 3 3 2
