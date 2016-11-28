@@ -145,8 +145,6 @@ class ServerHandler implements Runnable{
 
             // System.out.println(p.n_i+" SReceived "+m.type+" from "+m.origin);
 
-
-
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -358,11 +356,17 @@ class Protocol implements Runnable{
     public Boolean checkCGS(int[][] clocks) {
 
         // return true if vector clocks form CGS, false if not
-
         for(int i=0;i<clocks.length;i++) {
-            for(int j = 0;j<clocks.length;j++) {
-                if(clocks[i][i] < clocks[i][j])
+            for(int j = 0;j < clocks.length;j++) {
+                if(clocks[i][i] < clocks[j][i]) {
+
+                    System.out.println("Matrix clock:");
+                    System.out.println(Arrays.deepToString(clocks));
+                    System.out.println(Arrays.toString(clock));
+
+                    System.out.println("i = "+i+"j = "+j);
                     return false;
+                }
             }
         }
         return true;
@@ -472,12 +476,6 @@ class Protocol implements Runnable{
 
     private void transmitMessage(Message m, int dest) {
 
-        // m.origin = n_i;
-
-        if(m.origin != n_i) {
-            System.out.println(n_i+" trans Wrong message origin");
-        }
-
         try {
             // Send message to dest
             InetSocketAddress serverAddr = new InetSocketAddress(hosts[dest], ports[dest]);
@@ -500,19 +498,15 @@ class Protocol implements Runnable{
 
     public synchronized void sendMessage(int dest, Message m, Boolean broadcast) {
 
-        m.clock = incrementClock(n_i);
-        m.label = ++label;
-        // m.origin = n_i;
-
-        if(m.origin != n_i) {
-            System.out.println(n_i+" send Wrong message origin");
-        }
-
         try {
             sending.acquire();
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+
+        m.clock = incrementClock(n_i);
+        m.label = ++label;
+        m.origin = n_i;
 
         if(!broadcast) {
             transmitMessage(m, dest);
@@ -533,18 +527,18 @@ class Protocol implements Runnable{
     // Send message to neighbor
     public synchronized void sendMessage(int dest, MessageType type, Boolean broadcast) {
 
+        try {
+            sending.acquire();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
         // Send generic message directly to neighbor
         Message m = new Message();
         m.type = type;
         m.origin = n_i;
         m.clock = incrementClock(n_i);
         m.label = ++label;
-
-        try {
-            sending.acquire();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
 
         if(!broadcast) {
             transmitMessage(m, dest);
@@ -845,7 +839,6 @@ class Protocol implements Runnable{
 
         // Put the simple messages back in the receive queue
         while(tempreceiveQueue.peek() != null) {
-            System.out.println("Temp queue adding "+tempreceiveQueue.peek().type);
             putQueue(tempreceiveQueue.remove());
         }
 
@@ -909,6 +902,12 @@ class Protocol implements Runnable{
                             vectorReceived[i] = false;
                         }
 
+                        // Insert our own clock into the matrix
+                        for(int i = 0; i < n; i++) {
+                            clockMatrix[n_i][i] = clock[i];
+                        }
+                        vectorReceived[n_i] = true;
+
                         // Broadcast VECTOR_CLOCK message
                         Message mz = new Message();
                         mz.type = MessageType.VECTOR_CLOCK;
@@ -921,18 +920,49 @@ class Protocol implements Runnable{
                         }
 
                         // Gather the results
+                        System.out.println(n_i+" Gathering Vector clock responces");
+                        iter = 0;
                         while(true) {
+
+                            // Parse the incomming messages
+                            if(receiveQueue.peek() != null) {
+                                Message mt = receiveQueue.remove();
+                                switch(mt.type) {
+                                    case VECTOR_CLOCK_RESP:
+
+                                        // Store the clock value in the message
+                                        for(int i = 0; i < n; i++) {
+                                            clockMatrix[mt.origin][i] = mt.clock[i];
+                                        }
+                                        vectorReceived[mt.origin] = true;
+
+                                    break;
+                                    default:
+                                        tempreceiveQueue.add(mt);
+                                }
+                            }
+
                             Boolean stillWaiting = false;
                             for(int i = 0; i < n; i++) {
-                                if(vectorReceived[i] == true) {
+                                if(vectorReceived[i] == false) {
                                     stillWaiting = true;
                                     break;
                                 }
                             }
 
+                            if((++iter % 10000000) == 0) {
+                                System.out.println("vectorReceived");
+                                System.out.println(Arrays.toString(vectorReceived));
+                            }
+
                             if(!stillWaiting) {
                                 break;
                             }
+                        }
+                        System.out.println(n_i+" Done Gathering Vector clock responces");
+                        // Put messages back in the receive queue
+                        while(tempreceiveQueue.peek() != null) {
+                            putQueue(tempreceiveQueue.remove());
                         }
 
                         // Check in the checkCGS function
@@ -1063,7 +1093,6 @@ class Protocol implements Runnable{
 
                             // Put the simple messages back in the receive queue
                             while(tempreceiveQueue.peek() != null) {
-                                System.out.println("Temp queue adding "+tempreceiveQueue.peek().type);
                                 putQueue(tempreceiveQueue.remove());
                             }
                         }
@@ -1091,16 +1120,6 @@ class Protocol implements Runnable{
                         transmitMessage(m, dest);
 
                         sending.release(); 
-
-                    break;
-
-                    case VECTOR_CLOCK_RESP:
-
-                        // Store the clock value in the message
-                        for(int i = 0; i < n; i++) {
-                            clockMatrix[n_i][i] = m.clock[i];
-                        }
-                        vectorReceived[m.origin] = true;
 
                     break;
 

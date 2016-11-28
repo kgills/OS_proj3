@@ -1,0 +1,27 @@
+# n, cr_n, mean minInstanceDelay, mean minSendDelay, messaes
+5 10 100 10 1000
+
+0 dc09.utdallas.edu 1234
+1 dc09.utdallas.edu 1896
+2 dc09.utdallas.edu 1422
+3 dc09.utdallas.edu 1855
+4 dc09.utdallas.edu 1612
+
+# node_id, neighbors
+0 1 2
+1 0 3
+2 0 3
+3 1 2 4
+4 3
+
+# cr iterations
+(c,1)
+(c,2)
+(c,0)
+(r,2)
+(c,4)
+(c,1)
+(c,0)
+(r,3)
+(c,3)
+(c,2)
