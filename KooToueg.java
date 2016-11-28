@@ -20,8 +20,6 @@ import com.sun.nio.sctp.SctpServerChannel;
  * Assuming that CP and recovery never fails
 */
 
-
-
 /******************************************************************************/
 class Application implements Runnable {
 
@@ -75,6 +73,8 @@ enum MessageType {
     PROTOCOL,           // You're next bro, execute checkpoint or recovery
     CHECKPOINT,         // Command for neighbor to take a checkpoint
     CHECKPOINT_RESP,    // Converge cast Response from neighbor once CP taken
+    RECOVERY,           // Command for neighbor to start Recovery
+    RECOVERY_RESP,      // Converge cast Response from neighbor once recovery is complete
     VECTOR_CLOCK,       
     VECTOR_CLOCK_RESP,
 }
@@ -93,6 +93,7 @@ class Message implements java.io.Serializable{
     int crIndex;
 
     int[] llr;
+    int[] lls;
 }
 
 /******************************************************************************/
@@ -103,6 +104,7 @@ class Checkpoint {
     int label;
     int[] llr;
     int[] fls;
+    int[] lls;
 }
 
 /******************************************************************************/
@@ -140,6 +142,9 @@ class ServerHandler implements Runnable{
             if(m.type != MessageType.SIMPLE) {
                 // System.out.println(p.n_i+" SReceived "+m.type+" from "+m.origin);
             }
+
+            // System.out.println(p.n_i+" SReceived "+m.type+" from "+m.origin);
+
 
 
         } catch (Exception e) {
@@ -220,17 +225,22 @@ class Server implements Runnable{
     }
 }
 
+/******************************************************************************/
 class ProtocolPasser implements Runnable{
 
     private Protocol p;
     private int dest;
-    private Message m;
+    private String[] crList;
+    private int[] crNodes;
+    private int crIndex;
     private int delay;
 
-    ProtocolPasser(Protocol p, int dest, Message m, int delay) {
+    ProtocolPasser(Protocol p, int dest, String [] crList, int [] crNodes, int crIndex, int delay) {
         this.p = p;
         this.dest = dest;
-        this.m = m;
+        this.crList = crList;
+        this.crNodes = crNodes;
+        this.crIndex = crIndex;
         this.delay = delay;
     }
 
@@ -238,7 +248,13 @@ class ProtocolPasser implements Runnable{
 
         p.delay(p.nextExp(delay));
 
-        // Send the protocol message to the next node
+        Message m = new Message();
+        m.crList = crList;
+        m.crNodes = crNodes;
+        m.crIndex = crIndex;
+        m.origin = p.n_i;
+        m.type = MessageType.PROTOCOL;
+
         p.sendMessage(dest, m, false);
     }
 }
@@ -259,6 +275,8 @@ class Protocol implements Runnable{
     private volatile int[] clock;
     private volatile int[] llr;          // Last label received
     private volatile int[] fls;          // First label sent
+    private volatile int[] lls;          // Last label sent
+    private volatile int[] templls;      // Last label sent, temporary before taking CP
     private volatile int label;
 
     private Checkpoint tentative;
@@ -302,15 +320,31 @@ class Protocol implements Runnable{
             fls[i] = -1;
         }
 
+        // Initialize LLS
+        lls = new int[n];
+        for(int i = 0; i < n; i++) {
+            lls[i] = -1;
+        }
+
+        // Initialize temporary LLS
+        templls = new int[n];
+        for(int i = 0; i < n; i++) {
+            templls[i] = -1;
+        }
+
         label = -1;
 
+        // Initialize checkpoints
         tentative = new Checkpoint();
         tentative.llr = new int[n];
         tentative.fls = new int[n];
+        tentative.lls = new int[n];
         tentative.clock = new int[n];
+
         perm = new Checkpoint();
         perm.llr = new int[n];
         perm.fls = new int[n];
+        perm.lls = new int[n];
         perm.clock = new int[n];
 
         receiveQueue = new ConcurrentLinkedQueue<Message>();  // Server produces messages, protocol consumes
@@ -383,6 +417,30 @@ class Protocol implements Runnable{
         }
     }
 
+    private void updateTempLLS(int dest, int label) {
+        templls[dest] = label;
+    }
+
+    private void commitCheckpoint() {
+
+        // Commit the temporary checkpoint
+        perm = tentative;
+
+        // Commit the LLS
+        for(int i = 0; i < n; i++) {
+            lls[i] = templls[i];
+            templls[i] = -1;
+        }
+    }
+
+    private void rollback() {
+        clock = perm.clock;
+        label = perm.label;
+        llr = perm.llr;
+        fls = perm.fls;
+        lls = perm.lls;
+    }
+
     private synchronized void mergeClock(int[] clock) {
         // Merge the give clock value with our own clock
 
@@ -413,6 +471,13 @@ class Protocol implements Runnable{
     }
 
     private void transmitMessage(Message m, int dest) {
+
+        // m.origin = n_i;
+
+        if(m.origin != n_i) {
+            System.out.println(n_i+" trans Wrong message origin");
+        }
+
         try {
             // Send message to dest
             InetSocketAddress serverAddr = new InetSocketAddress(hosts[dest], ports[dest]);
@@ -437,6 +502,11 @@ class Protocol implements Runnable{
 
         m.clock = incrementClock(n_i);
         m.label = ++label;
+        // m.origin = n_i;
+
+        if(m.origin != n_i) {
+            System.out.println(n_i+" send Wrong message origin");
+        }
 
         try {
             sending.acquire();
@@ -447,11 +517,13 @@ class Protocol implements Runnable{
         if(!broadcast) {
             transmitMessage(m, dest);
             updateFLS(dest, m.label, false);
+            updateTempLLS(dest, m.label);
 
         } else {
             for(int i = 0; i < n; i++) {
                 transmitMessage(m, i);
                 updateFLS(i, m.label, false);
+                updateTempLLS(i, m.label);
             }
         }
 
@@ -477,22 +549,17 @@ class Protocol implements Runnable{
         if(!broadcast) {
             transmitMessage(m, dest);
             updateFLS(dest, m.label, false);
+            updateTempLLS(dest, m.label);
 
         } else {
             for(int i = 0; i < n; i++) {
                 transmitMessage(m, i);
                 updateFLS(i, m.label, false);
+                updateTempLLS(i, m.label);
             }
         }
 
         sending.release();
-    }
-
-    public void broadcastNeighbors(Message m) {
-        // Broadcast message to neighbors
-        // TODO: make sure we don't send any other messages while we're broadcasting
-        // TODO: When flooding, make sure we break cycles by tracking if we've already broadcast
-        //       the message
     }
 
     public void putQueue(Message m) {
@@ -511,6 +578,7 @@ class Protocol implements Runnable{
         m.crList = crList;
         m.crNodes = crNodes;
         m.crIndex = 0;
+        m.origin = n_i;
 
         // Save the destination
         int dest = m.crNodes[m.crIndex];
@@ -520,11 +588,8 @@ class Protocol implements Runnable{
     }
 
     // -1 if this node is the initiator
-    public void crHandler(int origin)
+    public void checkHandler(int origin)
     {
-
-        // TODO: Currently only hanlding CP
-
         // Empty out the receive queue, assuming that only simple messages will be in the queue
         while(true) {
 
@@ -565,6 +630,7 @@ class Protocol implements Runnable{
 
             tentative.llr[i] = llr[i];
             tentative.fls[i] = fls[i];
+            tentative.lls[i] = lls[i];
             tentative.clock[i] = clock[i];
 
             llr[i] = -1;
@@ -660,7 +726,131 @@ class Protocol implements Runnable{
 
         // Commit the checkpoint
         System.out.println(n_i+" Committing checkpoint");
-        perm = tentative;
+        commitCheckpoint();
+    }
+
+    // -1 if this node is the initiator
+    public void recoveryHandler(int origin)
+    {
+
+        System.out.println(n_i+" RecoverHandler origin: "+origin);
+
+        // Empty out the receive queue, assuming that only simple messages will be in the queue
+        while(true) {
+
+            // Process messages in the received queue
+            if(receiveQueue.peek() != null) {
+                Message m = receiveQueue.remove();
+
+                if(m.type == MessageType.SIMPLE) {
+                    tempreceiveQueue.add(m);
+                    
+                } else if(m.type == MessageType.RECOVERY) { 
+                    // ALRIGHT
+
+                    // Send the RECOVERY response
+                    Message mr = new Message();
+                    mr.type = MessageType.RECOVERY_RESP;
+                    mr.origin = n_i;
+
+                    transmitMessage(mr, m.origin);
+                    System.out.println(n_i+" 0Sent RECOVERY_RESP to "+m.origin);
+
+                } else {
+                    System.out.println("ERROR: Processed unknown message in recoveryHandler");
+                    System.out.println(m.type+" From "+m.origin);
+                    while(true) {}
+                }
+            } else {
+                break;
+            }
+        }
+        
+        // Determine which of our neighbors we need to send the message to
+        Boolean[] neighborWaiting = new Boolean[n];
+        for(int i = 0; i < n; i++) {
+            neighborWaiting[i] = false;
+        }
+        for(int i = 0; i < neighbors.length; i++) {
+
+            // Continue through originator of the recovery request
+            if(neighbors[i] == origin) {
+                continue;
+            }
+
+            // Send RECOVERY request to neighbor
+            System.out.println(n_i+" Sending RECOVERY to neighbor "+neighbors[i]);
+
+            Message m = new Message();
+            m.type = MessageType.RECOVERY;
+            m.origin = n_i;
+            m.clock = clock;
+            m.label = label;
+            m.lls = lls;
+
+            transmitMessage(m, neighbors[i]);
+            neighborWaiting[neighbors[i]] = true;
+        }
+
+        int iter = 0;
+        
+        while(true) {
+
+            // Process messages in the received queue
+            if(receiveQueue.peek() != null) {
+                Message m = receiveQueue.remove();
+
+                if(m.type == MessageType.RECOVERY_RESP) {
+                    System.out.println(n_i+" Processing RECOVERY_RESP from "+m.origin);
+                    neighborWaiting[m.origin] = false;
+
+                } else if(m.type == MessageType.SIMPLE) {
+                    tempreceiveQueue.add(m);
+                } else if(m.type == MessageType.RECOVERY) {
+                        // Do nothing, already taking a checkpoint
+
+                        // Send the RECOVERY response
+                        Message mr = new Message();
+                        mr.type = MessageType.RECOVERY_RESP;
+                        mr.origin = n_i;
+
+                        transmitMessage(mr, m.origin);
+
+                } else {
+                    System.out.println("ERROR: Unexpected type received in recoveryHandler");
+                    System.out.println(m.type+" From "+m.origin);
+                    while(true) {}
+                }
+            }
+
+            Boolean stillWaiting = false;
+            for(int i = 0; i < n; i++) {
+                if(neighborWaiting[i] == true) {
+                    stillWaiting = true;
+                    break;
+                }
+            }
+
+            if(stillWaiting == false) {
+                break;
+            }
+
+            // else if((++iter % 100000000) == 0) {
+            //     System.out.println(n_i+" Still waiting "+Thread.currentThread().getId());
+            //     for(int i = 0; i < n; i++) {
+            //         System.out.println(neighborWaiting[i]);
+            //     }
+            // }
+        }
+
+        // Put the simple messages back in the receive queue
+        while(tempreceiveQueue.peek() != null) {
+            System.out.println("Temp queue adding "+tempreceiveQueue.peek().type);
+            putQueue(tempreceiveQueue.remove());
+        }
+
+        System.out.println(n_i+" Rolling back");
+        rollback();
     }
 
     public void run() {
@@ -704,10 +894,11 @@ class Protocol implements Runnable{
                             e.printStackTrace();
                         }
 
-                        // Run the CR 
-                        crHandler(-1);
-
-                        sending.release();
+                        if(m.crList[m.crIndex].equals("c")) {
+                            checkHandler(-1);                            
+                        } else {
+                            recoveryHandler(-1);
+                        }
 
                         // Clear the vector clock matrix
                         for(int i = 0; i < n; i++) {
@@ -719,7 +910,15 @@ class Protocol implements Runnable{
                         }
 
                         // Broadcast VECTOR_CLOCK message
-                        sendMessage(0, MessageType.VECTOR_CLOCK, true);
+                        Message mz = new Message();
+                        mz.type = MessageType.VECTOR_CLOCK;
+                        mz.origin = n_i;
+                        for(int i = 0; i < n; i++) {
+                            if(i == n_i) {
+                                continue;
+                            }
+                            transmitMessage(mz, i);                            
+                        }
 
                         // Gather the results
                         while(true) {
@@ -738,28 +937,31 @@ class Protocol implements Runnable{
 
                         // Check in the checkCGS function
                         if(!checkCGS(clockMatrix)) {
-                            System.out.println("ERROR, inconsistent global state in last checkpoint");
+                            System.out.println("ERROR, inconsistent global state");
                             while(true) {}
                         } else {
-                            System.out.println(n_i+" Last Checkpoints concurrent");
+                            System.out.println(n_i+" Vector clocks concurrent");
                         }
-
 
                         System.out.println("Node "+n_i+" complete "+m.crList[m.crIndex]+" "+m.crIndex);
 
                         if(m.crList.length > ++m.crIndex) {
 
+                            System.out.println("Passing protocol message");
+
                             // Spawn a new thread to wait and send the protocol message to the next node
-                            Thread protocolPasser_thread = new Thread(new ProtocolPasser(this, m.crNodes[m.crIndex], m, crDelay));
+                            // ProtocolPasser(Protocol p, int dest, String [] crList, int [] crNodes, int crIndex, int delay) {
+                            Thread protocolPasser_thread = new Thread(new ProtocolPasser(this, m.crNodes[m.crIndex], m.crList, m.crNodes, m.crIndex, crDelay));
                             protocolPasser_thread.start();
                         }
+
+                        sending.release();
 
                     break;
 
                     case CHECKPOINT:
 
                         System.out.println(n_i+" Processing CHECKPOINT from "+m.origin);
-
 
                         // Lock the sending semaphore to prevent other threads from sending
                         try {
@@ -771,7 +973,7 @@ class Protocol implements Runnable{
                         // Determine if we need to take a CP
                         if((m.llr[n_i] >= fls[m.origin]) && (fls[m.origin] > -1)) {
                             // Take a CP
-                            crHandler(m.origin);
+                            checkHandler(m.origin);
                         } else {
                             System.out.println(n_i+" Not taking a CP");
                         }
@@ -785,8 +987,89 @@ class Protocol implements Runnable{
 
                         // System.out.println(n_i+" 2Sent CHECKPOINT_RESP to "+m.origin);
 
-
                         sending.release();
+
+                    break;
+
+                    case RECOVERY:
+
+                        System.out.println(n_i+" Processing RECOVERY from "+m.origin);
+
+                        // Lock the sending semaphore to prevent other threads from sending
+                        try {
+                            sending.acquire();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+
+                        // Determine if we need to rollback
+                        Boolean recovering = false;
+                        if((llr[m.origin] > m.lls[n_i])) {
+                            // Rollback
+                            recovering = true;
+                            recoveryHandler(m.origin);
+                        } else {
+                            System.out.println(n_i+" Not Rolling back");
+                        }
+
+                        // Send the RECOVERY_RESP response
+                        Message mt = new Message();
+                        mt.type = MessageType.RECOVERY_RESP;
+                        mt.origin = n_i;
+
+                        transmitMessage(mt, m.origin);
+
+                        if(recovering) {
+                            // Wait for vector clock message from initiator
+                            while(true) {
+
+                                // Process messages in the received queue
+                                if(receiveQueue.peek() != null) {
+                                    Message mp = receiveQueue.remove();
+
+                                    if(mp.type == MessageType.SIMPLE) {
+                                        tempreceiveQueue.add(mp);
+                                        
+                                    } else if(mp.type == MessageType.RECOVERY) { 
+                                        // ALRIGHT
+
+                                        // Send the RECOVERY response
+                                        Message mx = new Message();
+                                        mx.type = MessageType.RECOVERY_RESP;
+                                        mx.origin = n_i;
+
+                                        transmitMessage(mx, mp.origin);
+                                        System.out.println(n_i+" 0Sent RECOVERY_RESP to "+mp.origin);
+
+
+                                    } else if(mp.type == MessageType.VECTOR_CLOCK) {
+
+                                        // Send a VECTOR_CLOCK_RESP
+                                        int dest = mp.origin;
+                                        mp.origin = n_i;
+                                        mp.clock = clock;
+                                        mp.type = MessageType.VECTOR_CLOCK_RESP;
+
+                                        transmitMessage(mp, dest);
+
+                                        break;
+                                    } else {
+                                        System.out.println("ERROR: Processed unknown message in recoveryHandler");
+                                        System.out.println(mp.type+" From "+mp.origin);
+                                        while(true) {}
+                                    }
+                                }
+                            }
+
+                            // Put the simple messages back in the receive queue
+                            while(tempreceiveQueue.peek() != null) {
+                                System.out.println("Temp queue adding "+tempreceiveQueue.peek().type);
+                                putQueue(tempreceiveQueue.remove());
+                            }
+                        }
+                        
+                        // Unfreeze
+                        sending.release(); 
 
                     break;
 
@@ -798,7 +1081,16 @@ class Protocol implements Runnable{
                         m.clock = perm.clock;
                         m.type = MessageType.VECTOR_CLOCK_RESP;
 
-                        sendMessage(dest, m, false);
+                        // Lock the sending semaphore to prevent other threads from sending
+                        try {
+                            sending.acquire();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+
+                        transmitMessage(m, dest);
+
+                        sending.release(); 
 
                     break;
 

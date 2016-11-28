@@ -1,0 +1,16 @@
+# n, cr_n, mean minInstanceDelay, mean minSendDelay, messages
+2 2 1000 100 10
+
+0 localhost 3333
+1 localhost 3334
+
+# node_id, neighbors
+0 1
+1 0
+
+# cr iterations
+(c,1)
+(r,1)
+
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 2 0 2 8000 1000 20 localhost 3333 localhost 3334 1 1 c r 1 1
+# java -cp /home/kgills/Workspace/OS_proj3/ KooToueg 2 1 2 8000 1000 20 localhost 3333 localhost 3334 1 0 c r 1 1
