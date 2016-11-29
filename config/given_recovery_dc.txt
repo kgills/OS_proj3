@@ -1,11 +1,11 @@
 # n, cr_n, mean minInstanceDelay, mean minSendDelay, messaes
 5 10 100 10 1000
 
-0 dc09.utdallas.edu 1234
-1 dc09.utdallas.edu 1896
-2 dc09.utdallas.edu 1422
-3 dc09.utdallas.edu 1855
-4 dc09.utdallas.edu 1612
+0 dc02.utdallas.edu 1955
+1 dc37.utdallas.edu 1689
+2 dc25.utdallas.edu 1577
+3 dc16.utdallas.edu 1423
+4 dc19.utdallas.edu 1899
 
 # node_id, neighbors
 0 1 2

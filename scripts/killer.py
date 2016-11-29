@@ -9,7 +9,7 @@ print 'Opening config file:', str(sys.argv[1])
 config_file = open(sys.argv[1], 'r')
 
 # Edit this for your username
-user="khg140030"
+user="mbs140230"
 
 n = -1
 cr_n = -1
@@ -69,5 +69,5 @@ for line in config_file:
 for machine in machines:
 	command = ["ssh","-o","StrictHostKeyChecking=no",user+"@"+machine[1],"killall","-u",user,"&"]
 	print " ".join(command)
-	# p = subprocess.Popen(command)
-	# p.wait()
+	p = subprocess.Popen(command)
+	p.wait()

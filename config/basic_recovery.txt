@@ -1,5 +1,5 @@
 # n, cr_n, mean minInstanceDelay, mean minSendDelay, messages
-3 5 10000 1000 100
+3 5 1000 100 100
 
 0 localhost 3333
 1 localhost 3334

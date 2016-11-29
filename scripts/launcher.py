@@ -6,10 +6,10 @@ print 'Opening config file:', str(sys.argv[1])
 config_file = open(sys.argv[1], 'r')
 
 # Edit this to the path where the executables are
-path="/home/kgills/Workspace/OS_proj3/"
+path="~/Workspace/OS_proj3/"
 
 # Edit this for your username
-user="khg140030"
+user="mbs140230"
 
 n = -1
 cr_n = -1
@@ -134,7 +134,7 @@ for machine in machines:
 		command = command+[cr[1]]
 
 
-	# command = ["ssh","-o","StrictHostKeyChecking=no",user+"@"+machine[1]]+command
+	command = ["ssh","-o","StrictHostKeyChecking=no",user+"@"+machine[1]]+command
 	i = i+1
 
 	print " ".join(command)
